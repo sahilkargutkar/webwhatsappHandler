@@ -23,6 +23,22 @@ app.get('/webhook', (req, res) => {
   }
 })
 
+app.post('/send-message', async (req, res) => {
+  const { to, message } = req.body
+
+  if (!to || !message) {
+    return res.status(400).json({ error: 'Phone number (to) and message are required' })
+  }
+
+  try {
+    await sendMessage(to, message)
+    res.status(200).json({ success: true, message: 'Message sent successfully' })
+  } catch (error) {
+    console.error('Error sending message:', error.response?.data || error.message)
+    res.status(500).json({ error: 'Failed to send message', details: error.response?.data || error.message })
+  }
+})
+
 app.post('/webhook', async (req, res) => {
   const { entry } = req.body
 
@@ -82,7 +98,7 @@ app.post('/webhook', async (req, res) => {
 
 async function sendMessage(to, body) {
   await axios({
-    url: 'https://graph.facebook.com/v21.0/phone_number_id/messages',
+    url: `https://graph.facebook.com/v21.0/${to}/messages`,
     method: 'post',
     headers: {
       'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
