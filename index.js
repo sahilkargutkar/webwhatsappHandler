@@ -3,6 +3,7 @@ const axios = require('axios')
 
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID
 
 const app = express()
 app.use(express.json())
@@ -98,7 +99,7 @@ app.post('/webhook', async (req, res) => {
 
 async function sendMessage(to, body) {
   await axios({
-    url: `https://graph.facebook.com/v21.0/phone_number_id/messages`,
+    url: `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
     method: 'post',
     headers: {
       'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -117,7 +118,7 @@ async function sendMessage(to, body) {
 
 async function replyMessage(to, body, messageId) {
   await axios({
-    url: `https://graph.facebook.com/v21.0/phone_number_id/messages`,
+    url: `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
     method: 'post',
     headers: {
       'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -139,7 +140,7 @@ async function replyMessage(to, body, messageId) {
 
 async function sendList(to) {
   await axios({
-    url: `https://graph.facebook.com/v21.0/phone_number_id/messages`,
+    url: `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
     method: 'post',
     headers: {
       'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -197,7 +198,7 @@ async function sendList(to) {
 
 async function sendReplyButtons(to) {
   await axios({
-    url: `https://graph.facebook.com/v21.0/phone_number_id/messages`,
+    url: `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`,
     method: 'post',
     headers: {
       'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
