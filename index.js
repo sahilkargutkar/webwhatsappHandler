@@ -41,6 +41,7 @@ app.post('/send-message', async (req, res) => {
 })
 
 app.post('/webhook', async (req, res) => {
+   console.log("Incoming Webhook:", JSON.stringify(req.body, null, 2));
   const { entry } = req.body
 
   if (!entry || entry.length === 0) {
@@ -71,6 +72,24 @@ app.post('/webhook', async (req, res) => {
       if (messages.text.body.toLowerCase() === 'hello') {
         replyMessage(messages.from, 'Hello. How are you?', messages.id)
       }
+
+      if (messages.text.body.toLowerCase() === 'hi') {
+        replyMessage(messages.from, `Hi! 👋
+
+Thanks for reaching out.
+
+I help businesses grow with:
+
+🌐 Website Development
+🎨 UI/UX & Website Design
+🚀 SEO & Search Ranking Improvement
+📈 Google Analytics & Tracking Setup
+⚙️ Website Speed Optimization
+💼 E-commerce & Custom Web Solutions
+
+How can I help you today? 🙂`, messages.id)
+      }
+
 
       if (messages.text.body.toLowerCase() === 'list') {
         sendList(messages.from)
