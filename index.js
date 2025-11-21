@@ -68,13 +68,18 @@ app.post('/webhook', async (req, res) => {
 
   if (messages) {
     // Handle received messages
+    console.log('Message type:', messages.type)
+    console.log('Message body:', messages.text?.body)
+    
     if (messages.type === 'text') {
       if (messages.text.body.toLowerCase() === 'hello') {
-        replyMessage(messages.from, 'Hello. How are you?', messages.id)
+        console.log('Sending hello reply...')
+        await replyMessage(messages.from, 'Hello. How are you?', messages.id)
       }
 
       if (messages.text.body.toLowerCase() === 'hi') {
-        replyMessage(messages.from, `Hi! 👋
+        console.log('Sending hi reply...')
+        await replyMessage(messages.from, `Hi! 👋
 
 Thanks for reaching out.
 
@@ -92,28 +97,28 @@ How can I help you today? 🙂`, messages.id)
 
 
       if (messages.text.body.toLowerCase() === 'list') {
-        sendList(messages.from)
+        console.log('Sending list...')
+        await sendList(messages.from)
       }
 
       if (messages.text.body.toLowerCase() === 'buttons') {
-        sendReplyButtons(messages.from)
+        console.log('Sending buttons...')
+        await sendReplyButtons(messages.from)
       }
     }
 
     if (messages.type === 'interactive') {
       if (messages.interactive.type === 'list_reply') {
-        sendMessage(messages.from, `You selected the option with ID ${messages.interactive.list_reply.id} - Title ${messages.interactive.list_reply.title}`)
+        await sendMessage(messages.from, `You selected the option with ID ${messages.interactive.list_reply.id} - Title ${messages.interactive.list_reply.title}`)
       }
 
       if (messages.interactive.type === 'button_reply') {
-        sendMessage(messages.from, `You selected the button with ID ${messages.interactive.button_reply.id} - Title ${messages.interactive.button_reply.title}`)
+        await sendMessage(messages.from, `You selected the button with ID ${messages.interactive.button_reply.id} - Title ${messages.interactive.button_reply.title}`)
       }
     }
     
     console.log(JSON.stringify(messages, null, 2))
-  }
-  
-  res.status(200).send('Webhook processed')
+  }  res.status(200).send('Webhook processed')
 })
 
 async function sendMessage(to, body) {
