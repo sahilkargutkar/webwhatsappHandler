@@ -24,18 +24,21 @@ async function logMessageToSupabase(payload) {
   try {
     if (!supabase) {
       console.warn('Supabase not configured: set SUPABASE_URL and SUPABASE_KEY')
-      return
+      return { ok: false, error: 'supabase_not_configured' }
     }
-    // Insert into table `messages` (adjust if you use a different name)
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('messages')
       .insert(payload)
+      .select()
 
     if (error) {
       console.error('Supabase insert error:', error)
+      return { ok: false, error }
     }
+    return { ok: true, data }
   } catch (e) {
     console.error('Supabase logging failed:', e)
+    return { ok: false, error: e }
   }
 }
 
@@ -50,6 +53,8 @@ async function upsertContact(phone, update) {
       last_type: update.last_type || null,
       last_kind: update.last_kind || null,
       last_direction: update.last_direction || null,
+      last_sender_id: update.last_sender_id || null,
+      last_recipient_phone: update.last_recipient_phone || null,
       last_timestamp: update.last_timestamp || now,
       updated_at: now,
     }
@@ -160,26 +165,32 @@ app.post('/webhook', async (req, res) => {
 
     if (statuses) {
       handleMessageStatus(statuses)
-      await logMessageToSupabase({
+      const statusLog = await logMessageToSupabase({
         kind: 'status',
+        from: PHONE_NUMBER_ID,
         message_id: statuses.id,
         status: statuses.status,
+        to: statuses.recipient_id || null,
         raw: value
       })
+      if (!statusLog.ok) console.error('Status log failed:', statusLog.error)
       await upsertContact(statuses.recipient_id || statuses.from || messages?.from || null, {
         last_message_id: statuses.id,
         last_body: statuses.status,
         last_type: 'status',
         last_kind: 'status',
         last_direction: 'incoming',
+        last_sender_id: PHONE_NUMBER_ID,
+        last_recipient_phone: statuses.recipient_id || null,
       })
     }
 
     if (messages) {
       await handleIncomingMessage(messages)
-      await logMessageToSupabase({
+      const incomingLog = await logMessageToSupabase({
         kind: 'incoming',
         from: messages.from,
+        to: messages.to || null,
         type: messages.type,
         body: messages.text?.body || null,
         interactive: messages.interactive || null,
@@ -187,12 +198,15 @@ app.post('/webhook', async (req, res) => {
         timestamp: messages.timestamp || null,
         raw: messages
       })
+      if (!incomingLog.ok) console.error('Incoming log failed:', incomingLog.error)
       await upsertContact(messages.from, {
         last_message_id: messages.id,
         last_body: messages.text?.body || null,
         last_type: messages.type,
         last_kind: 'incoming',
         last_direction: 'incoming',
+        last_sender_id: messages.from,
+        last_recipient_phone: null,
         last_timestamp: messages.timestamp ? new Date(Number(messages.timestamp) * 1000).toISOString() : undefined,
       })
     }
@@ -228,19 +242,23 @@ async function handleIncomingMessage(message) {
 async function handleTextMessage(message) {
   console.log('Sending welcome message...')
   await replyMessage(message.from, WELCOME_MESSAGE, message.id)
-  await logMessageToSupabase({
+  const replyLog = await logMessageToSupabase({
     kind: 'reply',
     to: message.from,
+    from: PHONE_NUMBER_ID,
     type: 'text',
     body: WELCOME_MESSAGE,
     reply_to_message_id: message.id
   })
+  if (!replyLog.ok) console.error('Reply log failed:', replyLog.error)
   await upsertContact(message.from, {
     last_message_id: message.id,
     last_body: WELCOME_MESSAGE,
     last_type: 'text',
     last_kind: 'reply',
     last_direction: 'reply',
+    last_sender_id: PHONE_NUMBER_ID,
+    last_recipient_phone: message.from,
   })
 }
 
@@ -253,19 +271,23 @@ async function handleInteractiveMessage(message) {
       message.from, 
       `You selected the option with ID ${reply.id} - Title ${reply.title}`
     )
-    await logMessageToSupabase({
+    const listReplyLog = await logMessageToSupabase({
       kind: 'reply',
       to: message.from,
+      from: PHONE_NUMBER_ID,
       type: 'text',
       body: `You selected the option with ID ${reply.id} - Title ${reply.title}`,
       interactive_selection: reply
     })
+    if (!listReplyLog.ok) console.error('List-reply log failed:', listReplyLog.error)
     await upsertContact(message.from, {
       last_message_id: message.id,
       last_body: `You selected the option with ID ${reply.id} - Title ${reply.title}`,
       last_type: 'text',
       last_kind: 'reply',
       last_direction: 'reply',
+      last_sender_id: PHONE_NUMBER_ID,
+      last_recipient_phone: message.from,
     })
   }
 
@@ -275,19 +297,23 @@ async function handleInteractiveMessage(message) {
       message.from, 
       `You selected the button with ID ${reply.id} - Title ${reply.title}`
     )
-    await logMessageToSupabase({
+    const btnReplyLog = await logMessageToSupabase({
       kind: 'reply',
       to: message.from,
+      from: PHONE_NUMBER_ID,
       type: 'text',
       body: `You selected the button with ID ${reply.id} - Title ${reply.title}`,
       interactive_selection: reply
     })
+    if (!btnReplyLog.ok) console.error('Button-reply log failed:', btnReplyLog.error)
     await upsertContact(message.from, {
       last_message_id: message.id,
       last_body: `You selected the button with ID ${reply.id} - Title ${reply.title}`,
       last_type: 'text',
       last_kind: 'reply',
       last_direction: 'reply',
+      last_sender_id: PHONE_NUMBER_ID,
+      last_recipient_phone: message.from,
     })
   }
 }

@@ -27,6 +27,8 @@ create table if not exists public.contacts (
   last_type text null,
   last_kind text null,
   last_direction text null, -- incoming | reply
+  last_sender_id text null, -- whatsapp sender id (from)
+  last_recipient_phone text null, -- phone we sent reply to
   last_timestamp timestamptz null,
   total_messages int not null default 0,
   updated_at timestamptz not null default now()
