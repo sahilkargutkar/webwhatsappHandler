@@ -1,6 +1,11 @@
 const express = require('express')
 const axios = require('axios')
+const cors = require('cors')
 const { createClient } = require('@supabase/supabase-js')
+const dotenv = require('dotenv')
+
+// Load env vars from .env.local (fallback to process env if missing)
+dotenv.config({ path: '.env.local' })
 
 // Environment variables
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN
@@ -34,6 +39,37 @@ async function logMessageToSupabase(payload) {
   }
 }
 
+async function upsertContact(phone, update) {
+  try {
+    if (!supabase) return
+    const now = new Date().toISOString()
+    const payload = {
+      phone,
+      last_message_id: update.last_message_id || null,
+      last_body: update.last_body || null,
+      last_type: update.last_type || null,
+      last_kind: update.last_kind || null,
+      last_direction: update.last_direction || null,
+      last_timestamp: update.last_timestamp || now,
+      updated_at: now,
+    }
+    const { error } = await supabase
+      .from('contacts')
+      .upsert(payload, { onConflict: 'phone' })
+      .select()
+
+    if (error) {
+      console.error('Supabase contact upsert error:', error)
+    } else {
+      // Increment total_messages separately to avoid overwriting
+      await supabase.rpc('increment_contact_messages', { p_phone: phone })
+        .catch(err => console.warn('RPC increment failed (define function):', err.message))
+    }
+  } catch (e) {
+    console.error('Supabase contact upsert failed:', e)
+  }
+}
+
 // Welcome message template
 const WELCOME_MESSAGE = `Hi! 👋
 
@@ -52,6 +88,11 @@ How can I help you today? 🙂`
 
 const app = express()
 app.use(express.json())
+// Allow your Next.js frontend to consume this API
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST'],
+}))
 
 // Routes
 app.get('/', (req, res) => {
@@ -125,6 +166,13 @@ app.post('/webhook', async (req, res) => {
         status: statuses.status,
         raw: value
       })
+      await upsertContact(statuses.recipient_id || statuses.from || messages?.from || null, {
+        last_message_id: statuses.id,
+        last_body: statuses.status,
+        last_type: 'status',
+        last_kind: 'status',
+        last_direction: 'incoming',
+      })
     }
 
     if (messages) {
@@ -138,6 +186,14 @@ app.post('/webhook', async (req, res) => {
         message_id: messages.id,
         timestamp: messages.timestamp || null,
         raw: messages
+      })
+      await upsertContact(messages.from, {
+        last_message_id: messages.id,
+        last_body: messages.text?.body || null,
+        last_type: messages.type,
+        last_kind: 'incoming',
+        last_direction: 'incoming',
+        last_timestamp: messages.timestamp ? new Date(Number(messages.timestamp) * 1000).toISOString() : undefined,
       })
     }
     
@@ -179,6 +235,13 @@ async function handleTextMessage(message) {
     body: WELCOME_MESSAGE,
     reply_to_message_id: message.id
   })
+  await upsertContact(message.from, {
+    last_message_id: message.id,
+    last_body: WELCOME_MESSAGE,
+    last_type: 'text',
+    last_kind: 'reply',
+    last_direction: 'reply',
+  })
 }
 
 async function handleInteractiveMessage(message) {
@@ -197,6 +260,13 @@ async function handleInteractiveMessage(message) {
       body: `You selected the option with ID ${reply.id} - Title ${reply.title}`,
       interactive_selection: reply
     })
+    await upsertContact(message.from, {
+      last_message_id: message.id,
+      last_body: `You selected the option with ID ${reply.id} - Title ${reply.title}`,
+      last_type: 'text',
+      last_kind: 'reply',
+      last_direction: 'reply',
+    })
   }
 
   if (interactive.type === 'button_reply') {
@@ -211,6 +281,13 @@ async function handleInteractiveMessage(message) {
       type: 'text',
       body: `You selected the button with ID ${reply.id} - Title ${reply.title}`,
       interactive_selection: reply
+    })
+    await upsertContact(message.from, {
+      last_message_id: message.id,
+      last_body: `You selected the button with ID ${reply.id} - Title ${reply.title}`,
+      last_type: 'text',
+      last_kind: 'reply',
+      last_direction: 'reply',
     })
   }
 }
@@ -346,3 +423,45 @@ async function sendReplyButtons(to) {
 app.listen(PORT, () => {
   console.log(`Server started on port ${PORT}`)
 })
+
+// List all messages (with basic pagination and filtering)
+app.get('/logs', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ error: 'Supabase not configured' })
+    }
+
+    const { phone, kind, type, limit = 50, page = 1 } = req.query
+    const l = Math.min(Number(limit) || 50, 200)
+    const p = Math.max(Number(page) || 1, 1)
+    const from = (p - 1) * l
+    const to = from + l - 1
+
+    let query = supabase
+      .from('messages')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+
+    if (phone) {
+      query = query.or(`from.eq.${phone},to.eq.${phone}`)
+    }
+    if (kind) {
+      query = query.eq('kind', kind)
+    }
+    if (type) {
+      query = query.eq('type', type)
+    }
+
+    const { data, error, count } = await query.range(from, to)
+    if (error) {
+      return res.status(500).json({ error: error.message })
+    }
+
+    res.json({ page: p, limit: l, total: count || 0, data })
+  } catch (e) {
+    console.error('Logs route error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Note: No dashboard route. This backend only serves data via JSON.
