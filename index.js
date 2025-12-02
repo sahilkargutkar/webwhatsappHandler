@@ -263,7 +263,20 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (messages) {
-      await handleIncomingMessage(messages)
+      // Prevent processing messages from ourselves (loop prevention)
+      if (messages.from === PHONE_NUMBER_ID) {
+        console.log('Ignoring message from self to prevent loop')
+        return res.status(200).send('Webhook processed - self message ignored')
+      }
+
+      console.log(`Processing incoming message from ${messages.from}`)
+      
+      try {
+        await handleIncomingMessage(messages)
+      } catch (handleError) {
+        console.error('Error handling incoming message:', handleError)
+      }
+      
       const incomingLog = await logMessageToSupabase({
         kind: 'incoming',
         from: messages.from,
@@ -328,13 +341,21 @@ async function hasReceivedWelcome(phone) {
 }
 
 async function handleTextMessage(message) {
-  console.log('Sending welcome message...')
+  console.log('handleTextMessage called for:', message.from)
   
   const alreadyWelcomed = await hasReceivedWelcome(message.from)
+  console.log('Already welcomed:', alreadyWelcomed)
   
   if (!alreadyWelcomed) {
     // First message: send welcome
-    await replyMessage(message.from, WELCOME_MESSAGE, message.id)
+    console.log('Sending welcome message to:', message.from)
+    try {
+      await replyMessage(message.from, WELCOME_MESSAGE, message.id)
+      console.log('Welcome message sent successfully')
+    } catch (err) {
+      console.error('Failed to send welcome message:', err.response?.data || err.message)
+      throw err
+    }
     const replyLog = await logMessageToSupabase({
       kind: 'reply',
       to: message.from,
@@ -355,7 +376,14 @@ async function handleTextMessage(message) {
     })
   } else {
     // Follow-up message: send call/website buttons
-    await sendCallAndWebsiteButtons(message.from)
+    console.log('Sending call/website buttons to:', message.from)
+    try {
+      await sendCallAndWebsiteButtons(message.from)
+      console.log('Buttons sent successfully')
+    } catch (err) {
+      console.error('Failed to send buttons:', err.response?.data || err.message)
+      throw err
+    }
     const buttonLog = await logMessageToSupabase({
       kind: 'reply',
       to: message.from,
