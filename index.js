@@ -1,3 +1,47 @@
+// Upsert or set a contact's name
+app.post('/contacts/set-name', async (req, res) => {
+  try {
+    const { phone, name } = req.body
+    if (!supabase) return res.status(500).json({ error: 'Supabase not configured' })
+    if (!phone || !name) return res.status(400).json({ error: 'phone and name are required' })
+
+    await upsertContact(phone, { name })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('Set-name error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// List contacts for dashboard
+app.get('/contacts', async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: 'Supabase not configured' })
+    const { search = '', limit = 50, page = 1 } = req.query
+    const l = Math.min(Number(limit) || 50, 200)
+
+
+    const p = Math.max(Number(page) || 1, 1)
+    const from = (p - 1) * l
+    const to = from + l - 1
+
+    let query = supabase
+      .from('contacts')
+      .select('*', { count: 'exact' })
+      .order('updated_at', { ascending: false })
+
+    if (search) {
+      query = query.or(`phone.ilike.%${search}%,name.ilike.%${search}%`)
+    }
+
+    const { data, error, count } = await query.range(from, to)
+    if (error) return res.status(500).json({ error: error.message })
+    res.json({ page: p, limit: l, total: count || 0, data })
+  } catch (e) {
+    console.error('Contacts route error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
 const express = require('express')
 const axios = require('axios')
 const cors = require('cors')
@@ -26,9 +70,14 @@ async function logMessageToSupabase(payload) {
       console.warn('Supabase not configured: set SUPABASE_URL and SUPABASE_KEY')
       return { ok: false, error: 'supabase_not_configured' }
     }
+    const normalized = {
+      ...payload,
+      // Normalize a single phone field to simplify querying
+      phone: payload.kind === 'incoming' ? (payload.from || null) : (payload.to || null),
+    }
     const { data, error } = await supabase
       .from('messages')
-      .insert(payload)
+      .insert(normalized)
       .select()
 
     if (error) {
@@ -48,6 +97,7 @@ async function upsertContact(phone, update) {
     const now = new Date().toISOString()
     const payload = {
       phone,
+      name: update.name || null,
       last_message_id: update.last_message_id || null,
       last_body: update.last_body || null,
       last_type: update.last_type || null,
@@ -165,15 +215,42 @@ app.post('/webhook', async (req, res) => {
 
     if (statuses) {
       handleMessageStatus(statuses)
-      const statusLog = await logMessageToSupabase({
-        kind: 'status',
-        from: PHONE_NUMBER_ID,
-        message_id: statuses.id,
-        status: statuses.status,
-        to: statuses.recipient_id || null,
-        raw: value
-      })
-      if (!statusLog.ok) console.error('Status log failed:', statusLog.error)
+      
+      // Update existing message status instead of inserting new row
+      const { data: existingMessage } = await supabase
+        .from('messages')
+        .select('id, status')
+        .eq('message_id', statuses.id)
+        .single()
+      
+      if (existingMessage) {
+        // Update the status of existing message
+        const { error: updateError } = await supabase
+          .from('messages')
+          .update({ 
+            status: statuses.status,
+            updated_at: new Date().toISOString()
+          })
+          .eq('message_id', statuses.id)
+        
+        if (updateError) {
+          console.error('Status update failed:', updateError)
+        } else {
+          console.log(`Updated message ${statuses.id} status: ${statuses.status}`)
+        }
+      } else {
+        // No existing message, log as new status entry
+        const statusLog = await logMessageToSupabase({
+          kind: 'status',
+          from: PHONE_NUMBER_ID,
+          message_id: statuses.id,
+          status: statuses.status,
+          to: statuses.recipient_id || null,
+          raw: value
+        })
+        if (!statusLog.ok) console.error('Status log failed:', statusLog.error)
+      }
+      
       await upsertContact(statuses.recipient_id || statuses.from || messages?.from || null, {
         last_message_id: statuses.id,
         last_body: statuses.status,
@@ -239,27 +316,65 @@ async function handleIncomingMessage(message) {
   }
 }
 
+// Track if contact already received welcome message
+async function hasReceivedWelcome(phone) {
+  if (!supabase) return false
+  const { data } = await supabase
+    .from('contacts')
+    .select('last_kind')
+    .eq('phone', phone)
+    .single()
+  return data?.last_kind === 'reply'
+}
+
 async function handleTextMessage(message) {
   console.log('Sending welcome message...')
-  await replyMessage(message.from, WELCOME_MESSAGE, message.id)
-  const replyLog = await logMessageToSupabase({
-    kind: 'reply',
-    to: message.from,
-    from: PHONE_NUMBER_ID,
-    type: 'text',
-    body: WELCOME_MESSAGE,
-    reply_to_message_id: message.id
-  })
-  if (!replyLog.ok) console.error('Reply log failed:', replyLog.error)
-  await upsertContact(message.from, {
-    last_message_id: message.id,
-    last_body: WELCOME_MESSAGE,
-    last_type: 'text',
-    last_kind: 'reply',
-    last_direction: 'reply',
-    last_sender_id: PHONE_NUMBER_ID,
-    last_recipient_phone: message.from,
-  })
+  
+  const alreadyWelcomed = await hasReceivedWelcome(message.from)
+  
+  if (!alreadyWelcomed) {
+    // First message: send welcome
+    await replyMessage(message.from, WELCOME_MESSAGE, message.id)
+    const replyLog = await logMessageToSupabase({
+      kind: 'reply',
+      to: message.from,
+      from: PHONE_NUMBER_ID,
+      type: 'text',
+      body: WELCOME_MESSAGE,
+      reply_to_message_id: message.id
+    })
+    if (!replyLog.ok) console.error('Reply log failed:', replyLog.error)
+    await upsertContact(message.from, {
+      last_message_id: message.id,
+      last_body: WELCOME_MESSAGE,
+      last_type: 'text',
+      last_kind: 'reply',
+      last_direction: 'reply',
+      last_sender_id: PHONE_NUMBER_ID,
+      last_recipient_phone: message.from,
+    })
+  } else {
+    // Follow-up message: send call/website buttons
+    await sendCallAndWebsiteButtons(message.from)
+    const buttonLog = await logMessageToSupabase({
+      kind: 'reply',
+      to: message.from,
+      from: PHONE_NUMBER_ID,
+      type: 'interactive',
+      body: 'Get in touch',
+      reply_to_message_id: message.id
+    })
+    if (!buttonLog.ok) console.error('Button log failed:', buttonLog.error)
+    await upsertContact(message.from, {
+      last_message_id: message.id,
+      last_body: 'Call/Website buttons sent',
+      last_type: 'interactive',
+      last_kind: 'reply',
+      last_direction: 'reply',
+      last_sender_id: PHONE_NUMBER_ID,
+      last_recipient_phone: message.from,
+    })
+  }
 }
 
 async function handleInteractiveMessage(message) {
@@ -445,6 +560,126 @@ async function sendReplyButtons(to) {
   })
 }
 
+async function sendCallAndWebsiteButtons(to) {
+  return sendWhatsAppRequest('messages', {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'cta_url',
+      body: {
+        text: 'Thanks for your interest! You can call me or visit my website.'
+      },
+      action: {
+        name: 'cta_url',
+        parameters: {
+          display_text: 'Visit Website',
+          url: 'https://sahilkargutkar.me'
+        }
+      }
+    }
+  })
+}
+
+// Broadcast message to all contacts or filtered subset
+app.post('/broadcast', async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: 'Supabase not configured' })
+    
+    const { message, filter = {} } = req.body
+    if (!message) return res.status(400).json({ error: 'message is required' })
+
+    // Get all contacts (or filtered)
+    let query = supabase
+      .from('contacts')
+      .select('phone, name')
+      .order('updated_at', { ascending: false })
+
+    // Optional filters
+    if (filter.hasName) {
+      query = query.not('name', 'is', null)
+    }
+    if (filter.lastMessageAfter) {
+      query = query.gte('last_timestamp', filter.lastMessageAfter)
+    }
+
+    const { data: contacts, error } = await query
+    if (error) return res.status(500).json({ error: error.message })
+
+    if (!contacts || contacts.length === 0) {
+      return res.json({ success: true, sent: 0, failed: 0, message: 'No contacts found' })
+    }
+
+    // Send messages with delay to avoid rate limits
+    const results = []
+    for (const contact of contacts) {
+      try {
+        await sendMessage(contact.phone, message)
+        results.push({ phone: contact.phone, success: true })
+        
+        // Log broadcast message
+        await logMessageToSupabase({
+          kind: 'broadcast',
+          to: contact.phone,
+          from: PHONE_NUMBER_ID,
+          type: 'text',
+          body: message,
+        })
+        
+        // Small delay to avoid rate limits (adjust as needed)
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      } catch (err) {
+        console.error(`Failed to send to ${contact.phone}:`, err.message)
+        results.push({ phone: contact.phone, success: false, error: err.message })
+      }
+    }
+
+    const sent = results.filter(r => r.success).length
+    const failed = results.filter(r => !r.success).length
+
+    res.json({ 
+      success: true, 
+      sent, 
+      failed, 
+      total: contacts.length,
+      details: results 
+    })
+  } catch (e) {
+    console.error('Broadcast error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Get broadcast-ready contacts count
+app.get('/broadcast/preview', async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ error: 'Supabase not configured' })
+    
+    const { filter = {} } = req.query
+    let query = supabase
+      .from('contacts')
+      .select('phone, name, last_timestamp', { count: 'exact' })
+
+    if (filter.hasName === 'true') {
+      query = query.not('name', 'is', null)
+    }
+    if (filter.lastMessageAfter) {
+      query = query.gte('last_timestamp', filter.lastMessageAfter)
+    }
+
+    const { data, error, count } = await query
+    if (error) return res.status(500).json({ error: error.message })
+
+    res.json({ 
+      count: count || 0,
+      contacts: data?.slice(0, 10) || [] // Preview first 10
+    })
+  } catch (e) {
+    console.error('Broadcast preview error:', e)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server started on port ${PORT}`)
@@ -469,7 +704,8 @@ app.get('/logs', async (req, res) => {
       .order('created_at', { ascending: false })
 
     if (phone) {
-      query = query.or(`from.eq.${phone},to.eq.${phone}`)
+      // Use normalized phone field primarily; fallback to from/to for older rows
+      query = query.or(`phone.eq.${phone},from.eq.${phone},to.eq.${phone}`)
     }
     if (kind) {
       query = query.eq('kind', kind)

@@ -12,7 +12,9 @@ create table if not exists public.messages (
   timestamp text null,
   interactive_selection jsonb null,
   raw jsonb null,
-  created_at timestamptz not null default now()
+  phone text null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz null
 );
 
 -- Helpful index for querying latest per sender
@@ -22,6 +24,7 @@ create index if not exists messages_from_created_at_idx on public.messages ("fro
 create table if not exists public.contacts (
   id bigint generated always as identity primary key,
   phone text unique not null,
+  name text null,
   last_message_id text null,
   last_body text null,
   last_type text null,
@@ -35,6 +38,14 @@ create table if not exists public.contacts (
 );
 
 create index if not exists contacts_phone_idx on public.contacts (phone);
+
+
+ALTER TABLE public.messages 
+  ADD COLUMN IF NOT EXISTS updated_at timestamptz,
+  ADD COLUMN IF NOT EXISTS phone text;
+
+-- Create index on message_id for fast status lookups
+CREATE INDEX IF NOT EXISTS messages_message_id_idx ON public.messages (message_id);
 
 -- RLS setup (optional, enable if using auth)
 -- alter table public.messages enable row level security;
